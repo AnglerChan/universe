@@ -15,8 +15,8 @@ const activeAvatarEl = document.getElementById('active-avatar');
 let isProcessing = false;
 
 const contacts = [
-	{id: '1', name: '刘煊溢', status: '我行我素！', avatar: '刘', prompt: '', messages: [
-		{role: 'roommate', content: '我操，不是吧，又吃麦当劳？有钱哥。'}
+	{id: '1', name: '郭泡壳', status: '企鹅罐头', avatar: '郭', prompt: '', messages: [
+		{role: 'roommate', content: '我是郭泡壳，爱吃猪。有什么想问我的？'}
 	]},
 	/*{id: '2', name: 'Bob', status: '离线', avatar: 'B', prompt: '你是 Bob，偏好详细技术性回复。', messages: [
 		{role: 'assistant', content: 'Bob 在休息，稍后回复。'}
