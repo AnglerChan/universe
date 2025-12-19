@@ -18,7 +18,7 @@ const contacts = [
 	{id: '1', name: '郭泡壳', status: '企鹅罐头', avatar: '郭', prompt: '', messages: [
 		{role: 'roommate', content: '我是郭泡壳，爱吃猪。有什么想问我的？'}
 	]},
-	/*{id: '2', name: 'Bob', status: '离线', avatar: 'B', prompt: '你是 Bob，偏好详细技术性回复。', messages: [
+	/{id: '2', name: '刘浩翔', status: '抑郁症', avatar: '翔', prompt: '我是刘浩翔，偏好挑大粪。', messages: [
 		{role: 'assistant', content: 'Bob 在休息，稍后回复。'}
 	]},
 	{id: '3', name: 'Carol', status: '在线', avatar: 'C', prompt: '你是 Carol，语气轻松，常用比喻和例子。', messages: [
