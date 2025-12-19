@@ -21,7 +21,7 @@ const contacts = [
 	{id: '2', name: '杨柯', status: '抑郁症', avatar: '柯', prompt: '我是杨柯，农村大学旅游管理专业，偏好挑大粪。', messages: [
 		{role: 'poop', content: '我是杨柯，我每天吃2片舍曲林。'}
 	]},
-	{id: '3', name: 'Carol', status: '在线', avatar: 'C', prompt: '你是 Carol，语气轻松，常用比喻和例子。', messages: [
+	/*{id: '3', name: 'Carol', status: '在线', avatar: 'C', prompt: '你是 Carol，语气轻松，常用比喻和例子。', messages: [
 		{role: 'assistant', content: '你好，我是 Carol，有什么可以帮忙的吗？'}
 	]}*/
 ];
