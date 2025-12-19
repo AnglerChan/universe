@@ -32,6 +32,7 @@
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"test": "vitest",
+    "dev-local": "wrangler dev --local",
 		"sync:prompts": "node scripts/sync-default-prompts.js"
 	}
 }
