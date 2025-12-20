@@ -13,6 +13,7 @@ const activeStatusEl = document.getElementById('active-status');
 const activeAvatarEl = document.getElementById('active-avatar');
 
 let isProcessing = false;
+let inputLines = [];
 
 const contacts = [
 	{ id: 'group', name: '群聊', status: '三人组', avatar: '群', prompt: '', participants: ['1','2','3'], messages: [] },
@@ -29,9 +30,14 @@ const contacts = [
 
 let activeContactId = contacts[0].id;
 
-function init(){
+async function init(){
+	// assign random default prompts to persona contacts before rendering
+	await loadAllPromptsAndAssignRandom();
+	// load external input lines for automated messages and start auto chat
+	await loadInputLines();
+	startAutoChat();
 	renderContacts();
-	selectContact(activeContactId);
+	await selectContact(activeContactId);
 
 	userInput.addEventListener('input', () => {
 		userInput.style.height = 'auto';
@@ -95,12 +101,15 @@ async function selectContact(id){
 
 async function loadPromptForContact(contact){
 	// attempt to fetch ./prompts/{id}.md in public/; fallback to contact.prompt if missing
+	// if contact already has a prompt, don't overwrite it (we may have assigned defaults)
+	if(contact.id !== 'group' && contact.prompt) return;
 	try{
 		// if this is the group contact, load individual prompts for participants
 		if(contact.id === 'group'){
 			for(const pid of contact.participants || []){
 				const p = contacts.find(c=>c.id===pid);
 				if(!p) continue;
+				if(p.prompt) continue;
 				try{
 					const r = await fetch(`./prompts/${p.id}.md`);
 					if(r.ok){ p.prompt = (await r.text()).trim(); }
@@ -126,6 +135,160 @@ function parseTalkativenessFromPrompt(text){
 	const m2 = text.match(/talkativeness\)[:：]\s*([0-9.]+)/i);
 	if(m2) return parseFloat(m2[1]);
 	return 0.5;
+}
+
+function parseReplyRateFromPrompt(text){
+	if(!text) return 0.5;
+	const m = text.match(/"?reply_rate"?\s*[:：]\s*([0-9.]+)/i);
+	if(m) return parseFloat(m[1]);
+	return 0.5;
+}
+
+async function loadInputLines(){
+	try{
+		const resp = await fetch('./input.txt');
+		if(!resp.ok) return;
+		const txt = await resp.text();
+		inputLines = txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+	}catch(e){
+		console.debug('failed to load input.txt', e);
+		inputLines = [];
+	}
+}
+
+function pickRandomSender(contact){
+	const parts = (contact.participants || []).map(pid=>contacts.find(c=>c.id===pid)).filter(Boolean);
+	if(parts.length === 0) return null;
+	const weights = parts.map(p => Math.max(0.01, parseTalkativenessFromPrompt(p.prompt) || 0.01));
+	const sum = weights.reduce((a,b)=>a+b,0);
+	const r = Math.random() * sum;
+	let acc = 0;
+	for(let i=0;i<parts.length;i++){
+		acc += weights[i];
+		if(r <= acc) return parts[i].id;
+	}
+	return parts[parts.length-1].id;
+}
+
+function simulateIncomingMessage(contact, senderId, text){
+	const p = contacts.find(c=>c.id === senderId);
+	const name = p ? p.name : '匿名';
+	// append as a named message from participant
+	contact.messages.push({role: name, content: text});
+	appendBubble('assistant', text, {meta: name});
+
+	// decide whether the group will reply; compute average reply rate
+	const parts = (contact.participants || []).map(pid=>contacts.find(c=>c.id===pid)).filter(Boolean);
+	const avgReply = parts.map(pp=>parseReplyRateFromPrompt(pp.prompt)).reduce((a,b)=>a+b,0)/Math.max(1, parts.length);
+	const willReply = Math.random() < Math.min(0.9, avgReply + 0.1 * (Math.random()-0.5));
+	if(willReply){
+		// random delay before group reply (0.5s - 4s)
+		const delay = 500 + Math.floor(Math.random()*3500);
+		setTimeout(()=>{
+			triggerGroupResponse(contact);
+		}, delay);
+	}
+}
+
+async function triggerGroupResponse(contact){
+	if(!contact || contact.id !== 'group') return;
+	const messagesToSend = [];
+	// rebuild system prompt as in sendMessage
+	const parts = [];
+	for(const pid of contact.participants || []){
+		const p = contacts.find(c=>c.id===pid);
+		if(!p) continue;
+		parts.push(`Name: ${p.name}\nPrompt:\n${p.prompt || ''}`);
+	}
+	const activityList = (contact.participants || []).map(pid=>{
+		const p = contacts.find(c=>c.id===pid);
+		return p ? `${p.name}:${parseTalkativenessFromPrompt(p.prompt)}` : '';
+	}).filter(Boolean).join(', ');
+	const system = `You are to simulate a short realistic group chat among the following participants. ` +
+		`Each participant should speak with frequency roughly proportional to their \"talkativeness\" values. ` +
+		`Participants definitions:\n${parts.join('\n\n')}\n\n` +
+		`Talkativeness values: ${activityList}. ` +
+		`When responding, output one or more lines. Each line must begin with the speaker's name followed by a colon and their utterance.`;
+	messagesToSend.push({role:'system', content: system});
+	const groupHistory = contact.messages.slice(-20).map(m=>({role: m.role || 'assistant', content: m.content}));
+	messagesToSend.push(...groupHistory);
+
+	try{
+		const resp = await fetch('/api/chat', {
+			method: 'POST', headers: {'Content-Type':'application/json'},
+			body: JSON.stringify({messages: messagesToSend}),
+		});
+		if(!resp.ok) return;
+		const reader = resp.body.getReader();
+		const dec = new TextDecoder();
+		let assistantText = '';
+		while(true){
+			const {done, value} = await reader.read();
+			if(done) break;
+			const chunk = dec.decode(value, {stream:true});
+			const parts = chunk.split('\n').filter(Boolean);
+			for(const p of parts){
+				try{ const j = JSON.parse(p); if(j.response) assistantText += j.response; }
+				catch(e){ assistantText += p; }
+			}
+		}
+		// parse lines into speaker utterances
+		const lines = assistantText.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+		for(const ln of lines){
+			const m = ln.match(/^([^:：]+)[:：]\s*(.+)$/);
+			if(m){
+				const name = m[1].trim(); const content = m[2].trim();
+				contact.messages.push({role: name, content});
+				appendBubble('assistant', content, {meta: name});
+			}else{
+				contact.messages.push({role:'assistant', content: ln});
+				appendBubble('assistant', ln);
+			}
+		}
+	}catch(e){ console.error('group response error', e); }
+}
+
+function startAutoChat(){
+	const contact = contacts.find(c=>c.id === 'group');
+	if(!contact) return;
+	if(!inputLines || inputLines.length === 0) return;
+	// recursive scheduler
+	(function scheduleNext(){
+		const interval = 5000 + Math.floor(Math.random()*20000); // 5s - 25s
+		setTimeout(()=>{
+			const line = inputLines[Math.floor(Math.random()*inputLines.length)];
+			const senderId = pickRandomSender(contact);
+			if(senderId && line){ simulateIncomingMessage(contact, senderId, line); }
+			scheduleNext();
+		}, interval);
+	})();
+}
+
+async function loadAllPromptsAndAssignRandom(){
+	// collect non-group contacts
+	const personaContacts = contacts.filter(c=>c.id && c.id !== 'group');
+	if(personaContacts.length === 0) return;
+
+	// fetch all prompt files in parallel (based on known ids)
+	const fetches = personaContacts.map(c=>
+		fetch(`./prompts/${c.id}.md`).then(r=> r.ok ? r.text() : '').catch(()=>''));
+
+	const texts = await Promise.all(fetches);
+
+	// shuffle texts and assign to contacts that don't already have prompt
+	const shuffled = texts.slice();
+	for(let i = shuffled.length - 1; i > 0; i--){
+		const j = Math.floor(Math.random() * (i + 1));
+		[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+	}
+
+	let idx = 0;
+	for(const c of personaContacts){
+		if(c.prompt) { idx++; continue; }
+		const t = shuffled[idx] || '';
+		if(t) c.prompt = t.trim();
+		idx++;
+	}
 }
 
 function renderChatForActiveContact(){
