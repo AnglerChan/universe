@@ -174,8 +174,8 @@ function simulateIncomingMessage(contact, senderId, text){
 	const p = contacts.find(c=>c.id === senderId);
 	const name = p ? p.name : '匿名';
 	// append as a named message from participant
-	contact.messages.push({role: name, content: text});
-	appendBubble('assistant', text, {meta: name});
+	contact.messages.push({role: name, content: text, ts: Date.now()});
+	appendBubble('assistant', text, {meta: name, ts: Date.now()});
 
 	// decide whether the group will reply; compute average reply rate
 	const parts = (contact.participants || []).map(pid=>contacts.find(c=>c.id===pid)).filter(Boolean);
@@ -193,6 +193,8 @@ function simulateIncomingMessage(contact, senderId, text){
 // New: send instruction to model and ask personas to randomly reply according to reply_rate
 async function triggerGroupResponseWithInstruction(contact, instructionText){
 	if(!contact || contact.id !== 'group') return;
+	if(contact._isResponding) return; // avoid concurrent group responses
+	contact._isResponding = true;
 	const parts = [];
 	for(const pid of contact.participants || []){
 		const p = contacts.find(c=>c.id===pid);
@@ -234,15 +236,44 @@ async function triggerGroupResponseWithInstruction(contact, instructionText){
 			}
 		}
 		const lines = assistantText.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+		const replies = [];
 		for(const ln of lines){
 			const m = ln.match(/^([^:：]+)[:：]\s*(.+)$/);
 			if(m){
 				const name = m[1].trim(); const content = m[2].trim();
-				contact.messages.push({role: name, content});
-				appendBubble('assistant', content, {meta: name});
+				replies.push({name, content});
 			}
 		}
+		// display replies sequentially in random order
+		if(replies.length > 0){
+			displaySequentialReplies(contact, replies);
+		} else {
+			contact._isResponding = false;
+		}
 	}catch(e){ console.error('group instruction response error', e); }
+}
+
+function displaySequentialReplies(contact, replies){
+	// shuffle replies to create a random order
+	for(let i = replies.length - 1; i > 0; i--){
+		const j = Math.floor(Math.random() * (i + 1));
+		[replies[i], replies[j]] = [replies[j], replies[i]];
+	}
+	// schedule each reply sequentially with a small random delay
+	let cumulative = 0;
+	const minDelay = 600; const maxDelay = 1400;
+	replies.forEach((r, idx) => {
+		const d = minDelay + Math.floor(Math.random() * (maxDelay - minDelay));
+		cumulative += d;
+		setTimeout(()=>{
+			contact.messages.push({role: r.name, content: r.content, ts: Date.now()});
+			appendBubble('assistant', r.content, {meta: r.name, ts: Date.now()});
+			// if last, clear responding flag
+			if(idx === replies.length - 1){
+				contact._isResponding = false;
+			}
+		}, cumulative);
+	});
 }
 
 async function triggerGroupResponse(contact){
@@ -293,11 +324,11 @@ async function triggerGroupResponse(contact){
 			const m = ln.match(/^([^:：]+)[:：]\s*(.+)$/);
 			if(m){
 				const name = m[1].trim(); const content = m[2].trim();
-				contact.messages.push({role: name, content});
-				appendBubble('assistant', content, {meta: name});
+				contact.messages.push({role: name, content, ts: Date.now()});
+				appendBubble('assistant', content, {meta: name, ts: Date.now()});
 			}else{
-				contact.messages.push({role:'assistant', content: ln});
-				appendBubble('assistant', ln);
+				contact.messages.push({role:'assistant', content: ln, ts: Date.now()});
+				appendBubble('assistant', ln, {ts: Date.now()});
 			}
 		}
 	}catch(e){ console.error('group response error', e); }
@@ -351,24 +382,68 @@ async function loadAllPromptsAndAssignRandom(){
 function renderChatForActiveContact(){
 	messagesEl.innerHTML = '';
 	const contact = contacts.find(c => c.id === activeContactId);
+	if(!contact) return;
+	// group consecutive messages where time gap < 60s
+	const groups = [];
+	let current = null;
 	for(const m of contact.messages){
-		if(m.role === 'user'){
-			appendBubble('user', m.content);
-		}else if(m.role && m.role !== 'assistant'){
-			appendBubble('assistant', m.content, {meta: m.role});
+		if(!m.ts) m.ts = Date.now();
+		if(!current){
+			current = {startTs: m.ts, msgs: [m]};
 		}else{
-			appendBubble('assistant', m.content);
+			const last = current.msgs[current.msgs.length-1];
+			if(m.ts - last.ts < 60000){
+				current.msgs.push(m);
+			}else{
+				groups.push(current);
+				current = {startTs: m.ts, msgs: [m]};
+			}
 		}
+	}
+	if(current) groups.push(current);
+
+	for(const g of groups){
+		// create group container
+		const groupEl = document.createElement('div');
+		groupEl.className = 'msg-group';
+		// show group timestamp (use first message time)
+		const timeEl = document.createElement('div');
+		timeEl.className = 'meta';
+		const d = new Date(g.startTs);
+		timeEl.textContent = d.toLocaleTimeString();
+		groupEl.appendChild(timeEl);
+
+		for(const m of g.msgs){
+			const role = (m.role === 'user') ? 'user' : 'assistant';
+			if(m.role && m.role !== 'assistant' && m.role !== 'user'){
+				// named speaker, show meta as speaker name
+				groupEl.appendChild(createBubbleElement('assistant', m.content, {meta: m.role}));
+			}else{
+				groupEl.appendChild(createBubbleElement(role, m.content, {}));
+			}
+		}
+		messagesEl.appendChild(groupEl);
 	}
 }
 
 function appendBubble(role, content, opts={}){
+	const row = createBubbleElement(role, content, opts);
+	messagesEl.appendChild(row);
+	scrollToBottom();
+	return row.querySelector('.bubble');
+}
+
+function createBubbleElement(role, content, opts={}){
 	const row = document.createElement('div');
 	row.className = 'msg-row ' + (role === 'user' ? 'user' : 'assistant');
 
 	const bubble = document.createElement('div');
 	bubble.className = 'bubble ' + (role === 'user' ? 'user' : 'assistant');
 	bubble.innerHTML = escapeHtml(content);
+	if(opts.ts){
+		bubble.setAttribute('title', new Date(opts.ts).toLocaleString());
+		bubble.dataset.ts = String(opts.ts);
+	}
 
 	row.appendChild(bubble);
 
@@ -379,9 +454,7 @@ function appendBubble(role, content, opts={}){
 		row.appendChild(meta);
 	}
 
-	messagesEl.appendChild(row);
-	scrollToBottom();
-	return bubble;
+	return row;
 }
 
 function scrollToBottom(){
@@ -397,9 +470,10 @@ async function sendMessage(){
 	const contact = contacts.find(c => c.id === activeContactId);
 	if(!contact) return;
 
-	// add user bubble locally
-	appendBubble('user', text);
-	contact.messages.push({role:'user', content:text});
+	// add user bubble locally with timestamp
+	const now = Date.now();
+	appendBubble('user', text, {ts: now});
+	contact.messages.push({role:'user', content:text, ts: now});
 
 	// clear input
 	userInput.value = '';
@@ -487,15 +561,17 @@ async function sendMessage(){
 					if(m){
 						const name = m[1].trim();
 						const content = m[2].trim();
-						contact.messages.push({role: name, content});
-						appendBubble('assistant', content, {meta: name});
+						const now = Date.now();
+						contact.messages.push({role: name, content, ts: now});
+						appendBubble('assistant', content, {meta: name, ts: now});
 					}else{
-						contact.messages.push({role:'assistant', content: ln});
-						appendBubble('assistant', ln);
+						const now = Date.now();
+						contact.messages.push({role:'assistant', content: ln, ts: now});
+						appendBubble('assistant', ln, {ts: now});
 					}
 				}
 			}else{
-				contact.messages.push({role:'assistant', content: assistantText});
+				contact.messages.push({role:'assistant', content: assistantText, ts: Date.now()});
 			}
 	}catch(err){
 		console.error(err);
