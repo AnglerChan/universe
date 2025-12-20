@@ -175,7 +175,7 @@ function simulateIncomingMessage(contact, senderId, text){
 	const name = p ? p.name : '匿名';
 	// append as a named message from participant
 	contact.messages.push({role: name, content: text, ts: Date.now()});
-	appendBubble('assistant', text, {meta: name, ts: Date.now()});
+	appendBubble('assistant', text, {meta: name, ts: Date.now(), target: contact.id});
 
 	// decide whether the group will reply; compute average reply rate
 	const parts = (contact.participants || []).map(pid=>contacts.find(c=>c.id===pid)).filter(Boolean);
@@ -267,7 +267,7 @@ function displaySequentialReplies(contact, replies){
 		cumulative += d;
 		setTimeout(()=>{
 			contact.messages.push({role: r.name, content: r.content, ts: Date.now()});
-			appendBubble('assistant', r.content, {meta: r.name, ts: Date.now()});
+			appendBubble('assistant', r.content, {meta: r.name, ts: Date.now(), target: contact.id});
 			// if last, clear responding flag
 			if(idx === replies.length - 1){
 				contact._isResponding = false;
@@ -325,10 +325,10 @@ async function triggerGroupResponse(contact){
 			if(m){
 				const name = m[1].trim(); const content = m[2].trim();
 				contact.messages.push({role: name, content, ts: Date.now()});
-				appendBubble('assistant', content, {meta: name, ts: Date.now()});
+				appendBubble('assistant', content, {meta: name, ts: Date.now(), target: contact.id});
 			}else{
 				contact.messages.push({role:'assistant', content: ln, ts: Date.now()});
-				appendBubble('assistant', ln, {ts: Date.now()});
+				appendBubble('assistant', ln, {ts: Date.now(), target: contact.id});
 			}
 		}
 	}catch(e){ console.error('group response error', e); }
@@ -427,6 +427,12 @@ function renderChatForActiveContact(){
 }
 
 function appendBubble(role, content, opts={}){
+	// opts.target: optional contact id this message belongs to
+	const target = opts.target || activeContactId;
+	// only render to DOM if target chat is currently active
+	if(target !== activeContactId && !opts.force){
+		return null;
+	}
 	const row = createBubbleElement(role, content, opts);
 	messagesEl.appendChild(row);
 	scrollToBottom();
@@ -482,7 +488,7 @@ async function sendMessage(){
 	isProcessing = true;
 	sendButton.disabled = true;
 
-	const assistantBubble = appendBubble('assistant', '');
+	const assistantBubble = appendBubble('assistant', '', {target: contact.id});
 
 	try{
 		// prepare messagesToSend
@@ -544,8 +550,7 @@ async function sendMessage(){
 					assistantText += p;
 				}
 			}
-			assistantBubble.innerHTML = escapeHtml(assistantText);
-			scrollToBottom();
+			if(assistantBubble){ assistantBubble.innerHTML = escapeHtml(assistantText); scrollToBottom(); }
 		}
 
 			if(contact.id === 'group'){
@@ -563,19 +568,21 @@ async function sendMessage(){
 						const content = m[2].trim();
 						const now = Date.now();
 						contact.messages.push({role: name, content, ts: now});
-						appendBubble('assistant', content, {meta: name, ts: now});
+						appendBubble('assistant', content, {meta: name, ts: now, target: contact.id});
 					}else{
 						const now = Date.now();
 						contact.messages.push({role:'assistant', content: ln, ts: now});
-						appendBubble('assistant', ln, {ts: now});
+						appendBubble('assistant', ln, {ts: now, target: contact.id});
 					}
 				}
 			}else{
 				contact.messages.push({role:'assistant', content: assistantText, ts: Date.now()});
+				// append to DOM only if this chat is active
+				appendBubble('assistant', assistantText, {ts: Date.now(), target: contact.id});
 			}
 	}catch(err){
 		console.error(err);
-		assistantBubble.innerHTML = '请求失败，请稍后重试。';
+		if(assistantBubble){ assistantBubble.innerHTML = '请求失败，请稍后重试。'; }
 	}finally{
 		isProcessing = false;
 		sendButton.disabled = false;
